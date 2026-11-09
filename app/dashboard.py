@@ -9,7 +9,7 @@ router = APIRouter()
 def admin_dashboard():
     if not settings.admin_ui_enabled:
         raise HTTPException(404, "Dashboard disabled")
-    return """<!doctype html>
+    return r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OAuth Admin</title>
 <style>

@@ -20,9 +20,12 @@ def limit_token_requests(request: Request) -> None:
     if _redis:
         key = f"oauth:rate:{ip}:{now // 60}"
         try:
-            count = _redis.incr(key)
-            if count == 1:
-                _redis.expire(key, 120)
+            count = _redis.eval(
+                "local count = redis.call('INCR', KEYS[1]); "
+                "if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end; "
+                "return count",
+                1, key, 120,
+            )
         except redis.RedisError:
             # Fail closed when the configured production limiter is unavailable.
             raise HTTPException(503, "Rate limiter unavailable") from None

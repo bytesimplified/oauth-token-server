@@ -34,7 +34,7 @@ data "aws_iam_role" "workload" {
 resource "aws_kms_key" "signing" {
   description             = "OAuth RS256 asymmetric access-token signing"
   key_usage               = "SIGN_VERIFY"
-  customer_master_key_spec = "RSA_3072"
+  key_spec                = "RSA_3072"
   deletion_window_in_days = 30
 }
 
