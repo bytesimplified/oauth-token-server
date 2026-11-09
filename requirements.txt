@@ -6,3 +6,5 @@ cryptography>=43,<47
 python-multipart>=0.0.9,<1
 psycopg[binary]>=3.2,<4
 alembic>=1.13,<2
+redis>=5,<7
+prometheus-client>=0.20,<1

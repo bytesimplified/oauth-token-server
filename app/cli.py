@@ -18,6 +18,7 @@ def create_client(allowed_scopes: list[str], default_scopes: list[str]) -> tuple
         db.add(OAuthClient(
             client_id=client_id, secret_hash=hash_secret(client_secret),
             scopes=" ".join(sorted(allowed)), default_scopes=" ".join(sorted(default)), active=True,
+            resources=settings.audience,
         ))
     return client_id, client_secret
 

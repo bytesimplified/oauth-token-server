@@ -92,10 +92,10 @@ def rotate_signing_key() -> str:
     return _kid(new_key.public_key())
 
 
-def make_access_token(client_id: str, scope: str) -> str:
+def make_access_token(client_id: str, scope: str, audience: str | None = None) -> str:
     now = datetime.now(timezone.utc)
     payload = {
-        "iss": settings.issuer, "sub": client_id, "aud": settings.audience,
+        "iss": settings.issuer, "sub": client_id, "aud": audience or settings.audience,
         "client_id": client_id, "iat": int(now.timestamp()), "nbf": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=settings.token_ttl)).timestamp()),
         "jti": secrets.token_urlsafe(20), "scope": scope,
@@ -104,7 +104,7 @@ def make_access_token(client_id: str, scope: str) -> str:
     return jwt.encode(payload, key, algorithm="RS256", headers={"typ": "at+jwt", "kid": _kid(key.public_key())})
 
 
-def verify_access_token(token: str) -> dict:
+def verify_access_token(token: str, audience: str | None = None) -> dict:
     header = jwt.get_unverified_header(token)
     if header.get("typ") != "at+jwt":
         raise jwt.InvalidTokenError("Unexpected JWT header")
@@ -112,7 +112,7 @@ def verify_access_token(token: str) -> dict:
     if key is None:
         raise jwt.InvalidTokenError("Unknown signing key")
     payload = jwt.decode(
-        token, key, algorithms=["RS256"], audience=settings.audience, issuer=settings.issuer,
+        token, key, algorithms=["RS256"], audience=audience or settings.audience, issuer=settings.issuer,
         options={"require": ["iss", "sub", "aud", "exp", "iat", "nbf", "jti", "client_id"]}, leeway=0,
     )
     if payload["sub"] != payload["client_id"]:

@@ -16,6 +16,8 @@ from .crypto import jwks, make_access_token, public_key, verify_access_token
 from .dashboard import router as dashboard_router
 from .db import DUMMY_HASH, OAuthClient, RevokedToken, audit, get_db, init_db, jti_hash, verify_secret
 from .ratelimit import limit_token_requests
+from .metrics import router as metrics_router, token_requests
+from .oauth_extensions import router as oauth_extensions_router
 
 
 @asynccontextmanager
@@ -28,6 +30,8 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="OAuth 2.0 Client Credentials Server", version="2.0.0", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(dashboard_router)
+app.include_router(metrics_router)
+app.include_router(oauth_extensions_router)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -75,6 +79,7 @@ async def token(request: Request, response: Response, db: Session = Depends(get_
     good_secret = verify_secret(client_secret, client.secret_hash if client else DUMMY_HASH)
     if client is None or not client.active or not good_secret:
         audit(db, "token.denied", client_id, "invalid_client")
+        token_requests.labels("invalid_client").inc()
         db.commit()
         raise OAuthError("invalid_client", 401)
     requested = form.get("scope")
@@ -83,11 +88,19 @@ async def token(request: Request, response: Response, db: Session = Depends(get_
     scopes = set(requested.split()) if requested is not None else set(client.default_scopes.split())
     if not scopes <= set(client.scopes.split()):
         audit(db, "token.denied", client_id, "invalid_scope")
+        token_requests.labels("invalid_scope").inc()
         db.commit()
         raise OAuthError("invalid_scope")
     scope = " ".join(sorted(scopes))
-    access_token = make_access_token(client_id, scope)
+    resource = form.get("resource")
+    if len(form.getlist("resource")) > 1 or (resource is not None and not isinstance(resource, str)):
+        raise OAuthError("invalid_request")
+    audience = resource or settings.audience
+    if audience not in set(client.resources.split()):
+        raise OAuthError("invalid_target")
+    access_token = make_access_token(client_id, scope, audience)
     audit(db, "token.issued", client_id, scope)
+    token_requests.labels("issued").inc()
     db.commit()
     response.headers.update({"Cache-Control": "no-store", "Pragma": "no-cache"})
     return {"access_token": access_token, "token_type": "Bearer", "expires_in": settings.token_ttl, "scope": scope}
@@ -104,16 +117,18 @@ def metadata():
             "jwks_uri": settings.issuer + "/.well-known/jwks.json",
             "grant_types_supported": ["client_credentials"],
             "token_endpoint_auth_methods_supported": ["client_secret_basic"],
-            "scopes_supported": settings.allowed_scopes.split()}
+            "scopes_supported": settings.allowed_scopes.split(),
+            "revocation_endpoint": settings.issuer + "/oauth/revoke",
+            "introspection_endpoint": settings.issuer + "/oauth/introspect"}
 
 
-def require_scope(scope: str):
+def require_scope(scope: str, audience: str | None = None):
     def dependency(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
                    db: Session = Depends(get_db)) -> dict:
         if credentials is None or credentials.scheme.lower() != "bearer":
             raise HTTPException(status_code=401, detail="missing_token", headers={"WWW-Authenticate": "Bearer"})
         try:
-            claims = verify_access_token(credentials.credentials)
+            claims = verify_access_token(credentials.credentials, audience=audience)
         except (jwt.PyJWTError, ValueError, TypeError):
             raise HTTPException(status_code=401, detail="invalid_token",
                                 headers={"WWW-Authenticate": 'Bearer error="invalid_token"'}) from None

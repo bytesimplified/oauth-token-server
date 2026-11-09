@@ -24,6 +24,7 @@ def admin_auth(x_admin_key: str | None = Header(default=None)) -> None:
 class ClientCreate(BaseModel):
     scopes: list[str] = Field(min_length=1)
     default_scopes: list[str] = Field(default_factory=list)
+    resources: list[str] = Field(default_factory=lambda: [settings.audience])
 
 
 class ClientUpdate(BaseModel):
@@ -48,7 +49,8 @@ def check_scopes(scopes: list[str], defaults: list[str]) -> tuple[str, str]:
 @router.get("/clients", dependencies=[Depends(admin_auth)])
 def list_clients(db: Session = Depends(get_db)):
     return [{"client_id": c.client_id, "scopes": c.scopes.split(),
-             "default_scopes": c.default_scopes.split(), "active": c.active}
+             "default_scopes": c.default_scopes.split(), "active": c.active,
+             "resources": c.resources.split()}
             for c in db.scalars(select(OAuthClient).order_by(OAuthClient.client_id))]
 
 
@@ -58,7 +60,8 @@ def create_client(data: ClientCreate, db: Session = Depends(get_db)):
     client_id = "cli_" + secrets.token_urlsafe(18)
     secret = "sec_" + secrets.token_urlsafe(32)
     db.add(OAuthClient(client_id=client_id, secret_hash=hash_secret(secret),
-                       scopes=scopes, default_scopes=defaults, active=True))
+                       scopes=scopes, default_scopes=defaults, active=True,
+                       resources=" ".join(sorted(set(data.resources)))))
     audit(db, "client.created", client_id)
     db.commit()
     return {"client_id": client_id, "client_secret": secret, "scopes": scopes.split()}
@@ -71,6 +74,7 @@ def update_client(client_id: str, data: ClientUpdate, db: Session = Depends(get_
         raise HTTPException(404, "Client not found")
     client.scopes, client.default_scopes = check_scopes(data.scopes, data.default_scopes)
     client.active = data.active
+    client.resources = " ".join(sorted(set(data.resources)))
     audit(db, "client.updated", client_id)
     db.commit()
     return {"client_id": client_id, "active": client.active}

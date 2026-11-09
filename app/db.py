@@ -23,6 +23,7 @@ class OAuthClient(Base):
     scopes: Mapped[str] = mapped_column(String(1000), nullable=False)
     default_scopes: Mapped[str] = mapped_column(String(1000), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    resources: Mapped[str] = mapped_column(String(1000), nullable=False, default="orders-api")
 
 
 class AuditEvent(Base):

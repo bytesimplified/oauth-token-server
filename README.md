@@ -1,10 +1,10 @@
 # OAuth 2.0 Token Server
 
-FastAPI OAuth 2.0 **Client Credentials** server for machine-to-machine API authentication. This repository includes a PostgreSQL deployment option, an authenticated administration API, optional browser dashboard, JWT access tokens, scope enforcement, revocation denylist, signing-key rotation, audit logs, and tests.
+FastAPI machine-to-machine OAuth server implementing the Client Credentials grant, RS256 JWT access tokens, client registration and management, PostgreSQL/Alembic, Redis rate limiting, OAuth introspection and revocation, per-client resource audiences, an optional development admin UI, audit events, Prometheus metrics, and GitHub Actions CI.
 
-**Status:** Development reference. Not independently security-audited or production-ready. HTTPS, a shared distributed rate limiter, external key management, secret vault, and deployment hardening are required for internet-facing use.
+**Security status:** This is an evolving reference implementation, **not a certified production identity provider**. CI and integration results must be checked before deployment. In particular, multi-instance KMS/HSM-backed signing, production-grade administrative identity/roles, TLS ingress, and full deployment testing still require environment-specific work.
 
-## Start locally
+## Local development
 
 ```bash
 python -m venv .venv
@@ -14,13 +14,14 @@ python -m app.cli generate-keys
 alembic upgrade head
 python -m app.cli create-client --scopes orders:read orders:write --default-scopes orders:read
 uvicorn app.main:app --host 127.0.0.1 --port 8000
+pytest -q
 ```
 
-Store the generated client secret securely; it is displayed only once. To enable the admin API, set `OAUTH_ADMIN_API_KEY` to a strong random secret (32+ characters). To enable the browser UI also set `OAUTH_ADMIN_UI_ENABLED=true`. Environment variables are documented in `.env.example` and are not automatically loaded.
+The `OAUTH_*` settings are described in `.env.example`. Environment variables must be exported by your shell or supplied by your deployment; the example file is not loaded automatically. The admin API uses a strong `OAUTH_ADMIN_API_KEY` in development. Enable the development dashboard with `OAUTH_ADMIN_UI_ENABLED=true` and visit `/admin/ui`.
 
-## Docker + PostgreSQL
+## PostgreSQL + Redis via Docker
 
-Create a local `.env` containing a strong `POSTGRES_PASSWORD` and `OAUTH_ADMIN_API_KEY`. Never commit the file. Run:
+Create a local `.env` file containing `POSTGRES_PASSWORD`, `OAUTH_ADMIN_API_KEY` (at least 32 random characters), and `OAUTH_METRICS_KEY`. Never commit the file.
 
 ```bash
 mkdir -p keys
@@ -30,71 +31,63 @@ docker compose up -d
 docker compose run --rm oauth python -m app.cli create-client --scopes orders:read orders:write --default-scopes orders:read
 ```
 
-Docker Compose starts PostgreSQL 16 and runs Alembic migrations before launching the API. It binds the HTTP port to localhost only. Deploy behind HTTPS for remote access.
+Docker Compose binds the HTTP port to localhost and is **development only**. It uses PostgreSQL 16, Redis 7, and applies Alembic migrations. Production deployments must use HTTPS at an ingress, restrict internal network access, supply managed secrets and backups, and set `OAUTH_ENV=production` with a PostgreSQL URL, Redis URL, HTTPS issuer, and admin OIDC configuration.
 
-## Token issuance
-
-```bash
-curl -u "$CLIENT_ID:$CLIENT_SECRET" -d "grant_type=client_credentials&scope=orders:read" http://127.0.0.1:8000/oauth/token
-```
-
-Response: `{"access_token":"...","token_type":"Bearer","expires_in":600,"scope":"orders:read"}`.
-
-Use the token:
-
-```bash
-curl -H "Authorization: Bearer $ACCESS_TOKEN" http://127.0.0.1:8000/api/orders
-```
-
-## Endpoints
+## OAuth endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/oauth/token` | Client Credentials grant (HTTP Basic client auth) |
-| GET | `/.well-known/jwks.json` | Public verification keys |
-| GET | `/.well-known/oauth-authorization-server` | Server metadata |
-| GET | `/api/orders` | Protected demo API; requires `orders:read` |
-| GET | `/admin/clients` | List clients |
-| POST | `/admin/clients` | Register client |
-| PUT | `/admin/clients/{id}` | Update scopes/status |
+| POST | `/oauth/token` | Client Credentials access token |
+| POST | `/oauth/introspect` | RFC 7662 active status and claims |
+| POST | `/oauth/revoke` | RFC 7009 revocation of caller-owned tokens |
+| GET | `/.well-known/jwks.json` | Signing public keys |
+| GET | `/.well-known/oauth-authorization-server` | OAuth discovery metadata |
+| GET | `/api/orders` | Example protected API |
+
+Example:
+
+```bash
+curl -u "$CLIENT_ID:$CLIENT_SECRET" \
+  -d "grant_type=client_credentials&scope=orders:read" \
+  http://127.0.0.1:8000/oauth/token
+```
+
+For resource-specific access tokens, include `resource=orders-api`. Each client has a configurable set of permitted resource audiences. External resource servers should validate JWTs against the expected audience and JWKS and, when immediate revocation is necessary, consult the introspection endpoint.
+
+## Admin API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/admin/clients` | List clients and allowed audiences |
+| POST | `/admin/clients` | Create client; returns secret once |
+| PUT | `/admin/clients/{id}` | Update scopes, resources, status |
 | POST | `/admin/clients/{id}/rotate-secret` | Rotate secret |
-| POST | `/admin/clients/{id}/deactivate` | Deactivate client |
-| POST | `/admin/tokens/revoke` | Denylist token ID until expiry |
+| POST | `/admin/clients/{id}/deactivate` | Disable client |
+| POST | `/admin/tokens/revoke` | Internal token-ID denylist |
 | GET | `/admin/audit` | Recent audit events |
 | GET | `/admin/stats` | Basic usage counts |
-| POST | `/admin/keys/rotate` | Replace active signing key; retain old public key |
-| GET | `/admin/ui` | Optional browser dashboard |
+| POST | `/admin/keys/rotate` | Rotate signing key |
+| GET | `/admin/ui` | Optional development-only dashboard |
+| GET | `/internal/metrics` | Prometheus metrics (X-Metrics-Key) |
 
-Admin API requests require `X-Admin-Key: $OAUTH_ADMIN_API_KEY`; requests fail closed if the key is not configured. Protect admin endpoints using TLS, restricted network access, and preferably a real admin identity provider. The UI holds the supplied key only in the current page's memory, not local storage.
+Development administration uses `X-Admin-Key`. For production, set `OAUTH_ADMIN_OIDC_ISSUER`, `OAUTH_ADMIN_OIDC_AUDIENCE`, and `OAUTH_ADMIN_OIDC_JWKS_URL` and send `Authorization: Bearer <admin-idp-token>`. The token must have a `roles` claim containing `admin` (configurable claim name). The application validates signature, issuer, audience and expiration using the configured identity provider's JWKS. Restrict the admin API to trusted networks and use an identity provider that issues appropriately scoped administrator tokens.
 
-Example client registration:
+The `/admin/ui` key-entry page is intentionally disabled in production; integrate a secure OIDC admin frontend instead.
 
-```bash
-curl -X POST http://127.0.0.1:8000/admin/clients \
-  -H "X-Admin-Key: $OAUTH_ADMIN_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"scopes":["orders:read","orders:write"],"default_scopes":["orders:read"]}'
-```
+## Security and operations
 
-**Revocation:** `POST /admin/tokens/revoke` expects `{"jti":"<token-jti>","exp":<token-exp>}`. The admin must derive these values from a verified token. This endpoint is an internal administrative denylist operation, not the standard RFC 7009 token revocation endpoint. A revoked token is denied by the bundled example resource API. External APIs need their own revocation lookup or token introspection integration.
+- Secrets are scrypt-hashed. Never log client secrets or tokens.
+- Access tokens expire after 600 seconds by default.
+- Redis provides a shared per-IP fixed-window rate limiter for token, introspection and revocation endpoints. Configure a trusted ingress to preserve meaningful client IPs; never trust arbitrary forwarded headers.
+- Token introspection and revocation require valid confidential-client credentials. Revocation is limited to tokens owned by the caller.
+- Token revocation records are stored in PostgreSQL and checked by the bundled protected API.
+- Audit events capture token issuance/denials and administrative changes; metrics expose token outcomes and admin action counts.
+- Signing key rotation retains previous public keys so issued JWTs remain verifiable until expiry. The local filesystem rotation mechanism is single-instance; use centralized KMS/HSM and controlled key lifecycle before multi-instance production use.
+- Production configuration fails fast if HTTPS issuer, PostgreSQL, Redis, or OIDC administrator settings are missing. It does **not** provision TLS, an OIDC provider, a KMS, or backups for you.
+- CI runs tests, a dependency audit, and a Docker build; check GitHub Actions results before release.
 
-**Key rotation:** `POST /admin/keys/rotate` retains the old public key in the key directory so already-issued tokens can be verified. Back up the directory, coordinate multiple replicas, and remove retired keys only after their tokens expire. The implementation assumes one active signing instance.
+## Not included
 
-**Rate limiting:** `/oauth/token` has an in-process, per-IP 60-second limiter. This is not distributed and must be replaced with Redis or a gateway limiter for multi-instance deployments. The server deliberately ignores client-supplied forwarded IP headers.
+Authorization Code + PKCE, OpenID Connect, refresh tokens, mTLS, private-key JWT client authentication, full multi-tenant RBAC, distributed signing-key management, browser-based OIDC admin login, end-to-end TLS deployment, and detailed per-client trend analytics.
 
-**Audit:** The database records client changes, successful and failed token requests, and key rotation. It never stores raw client secrets or token strings in audit records. The stats endpoint shows cumulative counts, not full analytics.
-
-## Tests
-
-```bash
-pip install -r requirements-dev.txt
-pytest -q
-```
-
-The existing flow/security tests plus admin and revocation tests are included. These changes should be tested in your deployment environment before promotion.
-
-## Limitations
-
-This is **Client Credentials only**. Refresh tokens and Authorization Code + PKCE are not included because they require additional user-oriented authorization flows. Token introspection, resource indicators, multiple audiences, user sessions, external KMS, distributed rate limiting, enterprise RBAC, and comprehensive client usage analytics remain future work. Client deactivation prevents **new** tokens, not existing JWTs; use the denylist to revoke an issued token.
-
-See [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), and [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700).
+References: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009), [RFC 7662](https://www.rfc-editor.org/rfc/rfc7662), [RFC 8707](https://www.rfc-editor.org/rfc/rfc8707), [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700).

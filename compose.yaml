@@ -11,6 +11,13 @@ services:
       test: ["CMD-SHELL", "pg_isready -U oauth -d oauth"]
       interval: 5s
       retries: 10
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
   oauth:
     build: .
     ports:
@@ -19,13 +26,16 @@ services:
       OAUTH_ISSUER: http://127.0.0.1:8000
       OAUTH_AUDIENCE: orders-api
       OAUTH_DB_URL: postgresql+psycopg://oauth:${POSTGRES_PASSWORD}@db:5432/oauth
+      OAUTH_REDIS_URL: redis://redis:6379/0
       OAUTH_PRIVATE_KEY_PATH: /keys/private.pem
       OAUTH_ALLOWED_SCOPES: "orders:read orders:write"
       OAUTH_ADMIN_API_KEY: ${OAUTH_ADMIN_API_KEY:?Set OAUTH_ADMIN_API_KEY in .env}
       OAUTH_ADMIN_UI_ENABLED: "true"
-      OAUTH_TOKEN_TTL_SECONDS: "600"
+      OAUTH_METRICS_KEY: ${OAUTH_METRICS_KEY:?Set OAUTH_METRICS_KEY in .env}
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - ./keys:/keys
