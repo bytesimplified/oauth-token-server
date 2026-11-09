@@ -72,7 +72,7 @@ Schedule this periodically using your orchestration system; the application does
 
 ## 7. Encrypted backups and verified restoration
 
-Install PostgreSQL client tooling and [age](https://github.com/FiloSottile/age). Configure `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` through your secure deployment system and an `AGE_RECIPIENT` public key, then run `scripts/backup_postgres.sh /secure/path/oauth-backup.dump.age`. It streams pg_dump custom format through age encryption without writing unencrypted files. Store encrypted backups off-host with retention, access control, and immutable copies.
+Use `pg_dump` and `pg_restore` versions matching the server major version to avoid incompatible archive commands and settings. Test restores on an equal-or-newer server. Install PostgreSQL client tooling and [age](https://github.com/FiloSottile/age). Configure `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` through your secure deployment system and an `AGE_RECIPIENT` public key, then run `scripts/backup_postgres.sh /secure/path/oauth-backup.dump.age`. It streams pg_dump custom format through age encryption without writing unencrypted files. Store encrypted backups off-host with retention, access control, and immutable copies.
 
 Test restore into an **isolated staging database** using `CONFIRM_RESTORE=YES AGE_IDENTITY_FILE=/secure/key.txt scripts/restore_postgres.sh /secure/path/oauth-backup.dump.age`. A failed restore must block promotion. Rehearse recovery regularly; back up related configuration and KMS key policies separately.
 
