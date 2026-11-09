@@ -7,3 +7,13 @@ __pycache__
 keys/
 data/
 .env
+
+.env.production
+.env.production.example
+infra/
+monitoring/
+deploy/
+scripts/
+*.tfstate
+*.dump
+*.age

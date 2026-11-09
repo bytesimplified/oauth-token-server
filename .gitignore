@@ -8,3 +8,11 @@ data/
 .env
 .venv/
 *.egg-info/
+
+.env.production
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+*.dump
+*.age

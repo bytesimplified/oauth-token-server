@@ -1,0 +1,31 @@
+groups:
+  - name: oauth-availability
+    rules:
+      - alert: OAuthServerUnavailable
+        expr: up{job="oauth-token-server"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OAuth token server cannot be scraped"
+      - alert: OAuthHighHTTPErrorRate
+        expr: sum(rate(oauth_http_requests_total{status=~"5.."}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OAuth server has sustained HTTP 5xx errors"
+      - alert: OAuthInvalidClientSpike
+        expr: sum(rate(oauth_token_requests_total{outcome="invalid_client"}[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spike in denied OAuth client-credential requests"
+      - alert: OAuthTokenLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(oauth_http_duration_seconds_bucket{route="/oauth/token"}[5m]))) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Token endpoint 95th-percentile latency exceeds 1 second"

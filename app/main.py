@@ -13,10 +13,12 @@ from sqlalchemy.orm import Session
 from .admin import router as admin_router
 from .config import settings
 from .crypto import jwks, make_access_token, public_key, verify_access_token
+from .health import router as health_router
+from .analytics import router as analytics_router
 from .dashboard import router as dashboard_router
 from .db import DUMMY_HASH, OAuthClient, RevokedToken, audit, get_db, init_db, jti_hash, verify_secret
 from .ratelimit import limit_token_requests
-from .metrics import router as metrics_router, token_requests
+from .metrics import router as metrics_router, token_requests, observe_request
 from .oauth_extensions import router as oauth_extensions_router
 
 
@@ -31,6 +33,9 @@ app = FastAPI(title="OAuth 2.0 Client Credentials Server", version="2.0.0", life
 app.include_router(admin_router)
 app.include_router(dashboard_router)
 app.include_router(metrics_router)
+app.include_router(health_router)
+app.include_router(analytics_router)
+app.middleware('http')(observe_request)
 app.include_router(oauth_extensions_router)
 bearer_scheme = HTTPBearer(auto_error=False)
 

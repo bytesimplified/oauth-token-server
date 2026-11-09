@@ -1,4 +1,8 @@
 import os
+
+from .secret_loader import load_aws_secrets
+
+load_aws_secrets()
 from dataclasses import dataclass
 
 
@@ -21,6 +25,9 @@ class Config:
     admin_oidc_jwks_url: str = os.getenv("OAUTH_ADMIN_OIDC_JWKS_URL", "")
     admin_role_claim: str = os.getenv("OAUTH_ADMIN_ROLE_CLAIM", "roles")
     metrics_key: str = os.getenv("OAUTH_METRICS_KEY", "")
+    kms_key_id: str = os.getenv("OAUTH_KMS_KEY_ID", "")
+    kms_verify_key_ids: str = os.getenv("OAUTH_KMS_VERIFY_KEY_IDS", "")
+    aws_secret_arn: str = os.getenv("OAUTH_AWS_SECRET_ARN", "")
 
 
 settings = Config()
@@ -31,6 +38,8 @@ if settings.rate_limit < 1:
 if not settings.issuer or not settings.audience:
     raise ValueError("Issuer and audience are required")
 if settings.production:
+    if not settings.kms_key_id or not settings.aws_secret_arn:
+        raise ValueError("Production requires AWS KMS signing and Secrets Manager")
     if not settings.issuer.startswith("https://"):
         raise ValueError("Production issuer must use HTTPS")
     if not settings.database_url.startswith("postgresql+psycopg://"):

@@ -2,6 +2,9 @@ name: CI
 on:
   push:
   pull_request:
+permissions:
+  contents: read
+
 jobs:
   tests:
     runs-on: ubuntu-latest
@@ -10,11 +13,85 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements-dev.txt
+      - run: python -m pip install -r requirements-dev.txt
       - run: pytest -q
       - run: pip-audit -r requirements.txt
+
+  services-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: oauth
+          POSTGRES_USER: oauth
+          POSTGRES_PASSWORD: ci-only-database-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oauth -d oauth"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      OAUTH_DB_URL: postgresql+psycopg://oauth:ci-only-database-password@127.0.0.1:5432/oauth
+      OAUTH_REDIS_URL: redis://127.0.0.1:6379/0
+      OAUTH_PRIVATE_KEY_PATH: /tmp/oauth-ci-integration-private.pem
+      OAUTH_ADMIN_API_KEY: ci-only-admin-key-1234567890-1234567890
+      OAUTH_METRICS_KEY: ci-only-metrics-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m app.cli generate-keys
+      - run: alembic upgrade head
+      - run: python tests/integration_smoke.py
+
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t oauth-token-server:ci .
+      - name: Build image
+        run: docker build -t oauth-token-server:ci .
+      - name: Start complete stack and exercise HTTP flow
+        run: |
+          set -euo pipefail
+          cat > .env <<'EOF'
+          POSTGRES_PASSWORD=ci-only-postgres-password
+          OAUTH_ADMIN_API_KEY=ci-only-admin-key-1234567890-1234567890
+          OAUTH_METRICS_KEY=ci-only-metrics-key
+          EOF
+          mkdir -p keys
+          docker compose run --rm oauth python -m app.cli generate-keys
+          docker compose up -d --wait
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/health/ready; then break; fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:8000/health/ready
+          CREDS="$(docker compose exec -T oauth python -m app.cli create-client --scopes orders:read --default-scopes orders:read)"
+          CLIENT_ID="$(printf '%s\n' "$CREDS" | sed -n 's/^CLIENT_ID=//p')"
+          CLIENT_SECRET="$(printf '%s\n' "$CREDS" | sed -n 's/^CLIENT_SECRET=//p')"
+          test -n "$CLIENT_ID" && test -n "$CLIENT_SECRET"
+          TOKEN="$(curl --fail --silent -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials http://127.0.0.1:8000/oauth/token | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+          curl --fail --silent -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/orders | python3 -c 'import json,sys; assert json.load(sys.stdin)["message"] == "Authorized request"'
+          curl --fail --silent -u "$CLIENT_ID:$CLIENT_SECRET" -d "token=$TOKEN" http://127.0.0.1:8000/oauth/introspect | python3 -c 'import json,sys; assert json.load(sys.stdin)["active"]'
+          curl --fail --silent -u "$CLIENT_ID:$CLIENT_SECRET" -d "token=$TOKEN" http://127.0.0.1:8000/oauth/revoke > /dev/null
+          curl --fail --silent -u "$CLIENT_ID:$CLIENT_SECRET" -d "token=$TOKEN" http://127.0.0.1:8000/oauth/introspect | python3 -c 'import json,sys; assert not json.load(sys.stdin)["active"]'
+      - name: Collect container status on failure
+        if: failure()
+        run: docker compose ps
+      - name: Remove ephemeral services
+        if: always()
+        run: docker compose down -v --remove-orphans

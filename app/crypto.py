@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from .config import settings
+from .kms_signing import kms_public_keys, kms_sign_payload
 
 
 def generate_private_key(output: str) -> None:
@@ -36,6 +37,8 @@ def private_key():
 
 
 def public_key():
+    if settings.kms_key_id:
+        return next(iter(kms_public_keys().values()))
     return private_key().public_key()
 
 
@@ -53,6 +56,8 @@ def b64url_int(number: int) -> str:
 
 
 def all_public_keys() -> dict:
+    if settings.kms_key_id:
+        return kms_public_keys()
     keys = {}
     for path in sorted(key_directory().glob("*.pem")):
         try:
@@ -75,7 +80,9 @@ def jwks() -> dict:
 
 
 def rotate_signing_key() -> str:
-    """Retain previous public key for validation while replacing active private key."""
+    """Local dev key rotation only; KMS rotation is controlled by deployment IAM."""
+    if settings.kms_key_id:
+        raise RuntimeError("KMS key rotation must be performed via the deployment key configuration")
     path = Path(settings.private_key_path)
     previous = private_key()
     previous_kid = _kid(previous.public_key())
@@ -100,6 +107,8 @@ def make_access_token(client_id: str, scope: str, audience: str | None = None) -
         "exp": int((now + timedelta(seconds=settings.token_ttl)).timestamp()),
         "jti": secrets.token_urlsafe(20), "scope": scope,
     }
+    if settings.kms_key_id:
+        return kms_sign_payload(payload)
     key = private_key()
     return jwt.encode(payload, key, algorithm="RS256", headers={"typ": "at+jwt", "kid": _kid(key.public_key())})
 
