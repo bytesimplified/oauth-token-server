@@ -1,101 +1,88 @@
-# OAuth 2.0 Client Credentials Token Server
+# OAuth 2.0 Token Server
 
-A working **machine-to-machine OAuth 2.0 Authorization Server** and example protected API, built with FastAPI. This is a reference implementation, not a turnkey hardened identity platform.
+FastAPI OAuth 2.0 **Client Credentials** server for machine-to-machine API authentication. This repository includes a PostgreSQL deployment option, an authenticated administration API, optional browser dashboard, JWT access tokens, scope enforcement, revocation denylist, signing-key rotation, audit logs, and tests.
 
-## Architecture
+**Status:** Development reference. Not independently security-audited or production-ready. HTTPS, a shared distributed rate limiter, external key management, secret vault, and deployment hardening are required for internet-facing use.
 
-```text
-Client app -- client_id + client_secret --> POST /oauth/token
-                       |
-                Validate against hashed client secret in database
-                       |
-                Validate requested scopes
-                       |
-                Sign RS256 JWT (private key)
-                       |
-Client app <-- Bearer access token
-                       |
-Client app -- Authorization: Bearer <JWT> --> GET /api/orders
-                Verify signature, issuer, audience, expiry, scopes
-```
-
-Only the **Client Credentials** grant and **HTTP Basic client authentication** are implemented. There is no user login, consent screen, authorization-code grant, or refresh token. Client registration uses a local admin CLI rather than public HTTP registration.
-
-## Quick start (Python 3.11+)
+## Start locally
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+source .venv/bin/activate
+pip install -r requirements-dev.txt
 python -m app.cli generate-keys
+alembic upgrade head
 python -m app.cli create-client --scopes orders:read orders:write --default-scopes orders:read
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Save the resulting client ID and secret securely. The CLI displays the secret only once. The database stores the client ID, salted scrypt hash of the secret, scopes, and active status. The RSA private key is stored separately at `./keys/private.pem` by default; do not commit it. Configuration uses `OAUTH_*` environment variables listed in `.env.example`. The example file is not loaded automatically.
+Store the generated client secret securely; it is displayed only once. To enable the admin API, set `OAUTH_ADMIN_API_KEY` to a strong random secret (32+ characters). To enable the browser UI also set `OAUTH_ADMIN_UI_ENABLED=true`. Environment variables are documented in `.env.example` and are not automatically loaded.
 
-## Docker Compose (local development)
+## Docker + PostgreSQL
+
+Create a local `.env` containing a strong `POSTGRES_PASSWORD` and `OAUTH_ADMIN_API_KEY`. Never commit the file. Run:
 
 ```bash
-mkdir -p data keys
+mkdir -p keys
 docker compose build
 docker compose run --rm oauth python -m app.cli generate-keys
+docker compose up -d
 docker compose run --rm oauth python -m app.cli create-client --scopes orders:read orders:write --default-scopes orders:read
-docker compose up
 ```
 
-Compose binds plain HTTP to localhost only. For external access, deploy behind correctly configured HTTPS.
+Docker Compose starts PostgreSQL 16 and runs Alembic migrations before launching the API. It binds the HTTP port to localhost only. Deploy behind HTTPS for remote access.
 
-## Token request
+## Token issuance
 
 ```bash
-curl -sS -u "$CLIENT_ID:$CLIENT_SECRET" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'grant_type=client_credentials&scope=orders%3Aread' \
-  http://127.0.0.1:8000/oauth/token
+curl -u "$CLIENT_ID:$CLIENT_SECRET" -d "grant_type=client_credentials&scope=orders:read" http://127.0.0.1:8000/oauth/token
 ```
 
-Example response (token shortened):
+Response: `{"access_token":"...","token_type":"Bearer","expires_in":600,"scope":"orders:read"}`.
 
-```json
-{
-  "access_token": "eyJhbGciOiJSUzI1NiIs...",
-  "token_type": "Bearer",
-  "expires_in": 600,
-  "scope": "orders:read"
-}
-```
-
-To access the protected API:
+Use the token:
 
 ```bash
 curl -H "Authorization: Bearer $ACCESS_TOKEN" http://127.0.0.1:8000/api/orders
 ```
 
-The token endpoint requires URL-encoded form data (not JSON). `grant_type=client_credentials` is required; `scope` is optional and must be a subset of the client's allowed scopes.
-
 ## Endpoints
 
-| Route | Method | Purpose |
+| Method | Path | Purpose |
 | --- | --- | --- |
-| `/oauth/token` | POST | Issue RS256 JWT access tokens |
-| `/.well-known/oauth-authorization-server` | GET | OAuth authorization server metadata |
-| `/.well-known/jwks.json` | GET | RSA public verification key |
-| `/api/orders` | GET | Example API requiring `orders:read` |
+| POST | `/oauth/token` | Client Credentials grant (HTTP Basic client auth) |
+| GET | `/.well-known/jwks.json` | Public verification keys |
+| GET | `/.well-known/oauth-authorization-server` | Server metadata |
+| GET | `/api/orders` | Protected demo API; requires `orders:read` |
+| GET | `/admin/clients` | List clients |
+| POST | `/admin/clients` | Register client |
+| PUT | `/admin/clients/{id}` | Update scopes/status |
+| POST | `/admin/clients/{id}/rotate-secret` | Rotate secret |
+| POST | `/admin/clients/{id}/deactivate` | Deactivate client |
+| POST | `/admin/tokens/revoke` | Denylist token ID until expiry |
+| GET | `/admin/audit` | Recent audit events |
+| GET | `/admin/stats` | Basic usage counts |
+| POST | `/admin/keys/rotate` | Replace active signing key; retain old public key |
+| GET | `/admin/ui` | Optional browser dashboard |
 
-JWTs include `iss`, `sub`, `aud`, `client_id`, `scope`, `iat`, `nbf`, `exp`, and `jti`, with `typ=at+jwt`. The signing key is not shared with clients. The single configured audience comes from `OAUTH_AUDIENCE`.
+Admin API requests require `X-Admin-Key: $OAUTH_ADMIN_API_KEY`; requests fail closed if the key is not configured. Protect admin endpoints using TLS, restricted network access, and preferably a real admin identity provider. The UI holds the supplied key only in the current page's memory, not local storage.
 
-Invalid client credentials return HTTP 401 with `invalid_client`; unsupported grants or scopes return HTTP 400. Protected APIs return HTTP 401 for invalid or expired tokens and HTTP 403 for insufficient scope.
-
-## Administration
+Example client registration:
 
 ```bash
-python -m app.cli list-clients
-python -m app.cli rotate-client-secret cli_...
-python -m app.cli deactivate-client cli_...
+curl -X POST http://127.0.0.1:8000/admin/clients \
+  -H "X-Admin-Key: $OAUTH_ADMIN_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"scopes":["orders:read","orders:write"],"default_scopes":["orders:read"]}'
 ```
 
-Rotation invalidates the old **client secret** for new token issuance. Deactivation blocks new issuance. Existing short-lived JWTs remain valid until expiration. For instant revocation, introduce introspection or a token denylist.
+**Revocation:** `POST /admin/tokens/revoke` expects `{"jti":"<token-jti>","exp":<token-exp>}`. The admin must derive these values from a verified token. This endpoint is an internal administrative denylist operation, not the standard RFC 7009 token revocation endpoint. A revoked token is denied by the bundled example resource API. External APIs need their own revocation lookup or token introspection integration.
+
+**Key rotation:** `POST /admin/keys/rotate` retains the old public key in the key directory so already-issued tokens can be verified. Back up the directory, coordinate multiple replicas, and remove retired keys only after their tokens expire. The implementation assumes one active signing instance.
+
+**Rate limiting:** `/oauth/token` has an in-process, per-IP 60-second limiter. This is not distributed and must be replaced with Redis or a gateway limiter for multi-instance deployments. The server deliberately ignores client-supplied forwarded IP headers.
+
+**Audit:** The database records client changes, successful and failed token requests, and key rotation. It never stores raw client secrets or token strings in audit records. The stats endpoint shows cumulative counts, not full analytics.
 
 ## Tests
 
@@ -104,22 +91,10 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-The test suite covers the token flow, authentication errors, permissions, JWKS verification, token tampering, audience/expiry rejection, and secret rotation.
+The existing flow/security tests plus admin and revocation tests are included. These changes should be tested in your deployment environment before promotion.
 
-## Before production
+## Limitations
 
-1. Use HTTPS and set `OAUTH_ISSUER` to the exact external HTTPS URL.
-2. Move to PostgreSQL with schema migrations and backups.
-3. Store signing keys in KMS/HSM or a controlled secret manager; implement key rotation with overlapping JWKS keys.
-4. Add distributed rate limiting, audit trails, monitoring, request size limits, and secure proxy configuration.
-5. Never log client secrets or access tokens. Keep credentials and databases out of version control.
-6. Consider mTLS or private-key JWT authentication for high-assurance clients.
-7. For multiple APIs, implement RFC 8707 resource indicators and appropriate client-resource authorization.
-8. For mission-critical authentication, evaluate a mature maintained authorization server.
+This is **Client Credentials only**. Refresh tokens and Authorization Code + PKCE are not included because they require additional user-oriented authorization flows. Token introspection, resource indicators, multiple audiences, user sessions, external KMS, distributed rate limiting, enterprise RBAC, and comprehensive client usage analytics remain future work. Client deactivation prevents **new** tokens, not existing JWTs; use the denylist to revoke an issued token.
 
-## Standards
-
-- [RFC 6749 §4.4 — Client Credentials](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)
-- [RFC 9068 — JWT Access Token Profile](https://www.rfc-editor.org/rfc/rfc9068)
-- [RFC 9700 — OAuth Security Best Current Practice](https://www.rfc-editor.org/rfc/rfc9700)
-- [RFC 8414 — OAuth Authorization Server Metadata](https://www.rfc-editor.org/rfc/rfc8414)
+See [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749), [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), and [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700).

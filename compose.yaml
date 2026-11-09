@@ -1,16 +1,34 @@
-# Local development only. In production terminate TLS at a trusted ingress.
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: oauth
+      POSTGRES_USER: oauth
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oauth -d oauth"]
+      interval: 5s
+      retries: 10
   oauth:
     build: .
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      OAUTH_ISSUER: "http://127.0.0.1:8000"
+      OAUTH_ISSUER: http://127.0.0.1:8000
       OAUTH_AUDIENCE: orders-api
-      OAUTH_DB_URL: sqlite:////data/oauth.db
+      OAUTH_DB_URL: postgresql+psycopg://oauth:${POSTGRES_PASSWORD}@db:5432/oauth
       OAUTH_PRIVATE_KEY_PATH: /keys/private.pem
       OAUTH_ALLOWED_SCOPES: "orders:read orders:write"
+      OAUTH_ADMIN_API_KEY: ${OAUTH_ADMIN_API_KEY:?Set OAUTH_ADMIN_API_KEY in .env}
+      OAUTH_ADMIN_UI_ENABLED: "true"
       OAUTH_TOKEN_TTL_SECONDS: "600"
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
-      - ./data:/data
       - ./keys:/keys
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+volumes:
+  pgdata:
