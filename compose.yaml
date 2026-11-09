@@ -1,0 +1,16 @@
+# Local development only. In production terminate TLS at a trusted ingress.
+services:
+  oauth:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      OAUTH_ISSUER: "http://127.0.0.1:8000"
+      OAUTH_AUDIENCE: orders-api
+      OAUTH_DB_URL: sqlite:////data/oauth.db
+      OAUTH_PRIVATE_KEY_PATH: /keys/private.pem
+      OAUTH_ALLOWED_SCOPES: "orders:read orders:write"
+      OAUTH_TOKEN_TTL_SECONDS: "600"
+    volumes:
+      - ./data:/data
+      - ./keys:/keys
