@@ -95,3 +95,19 @@ jobs:
       - name: Remove ephemeral services
         if: always()
         run: docker compose down -v --remove-orphans
+
+  infrastructure-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: Validate Terraform without cloud credentials
+        run: |
+          terraform -chdir=infra/aws init -backend=false -input=false
+          terraform -chdir=infra/aws validate
+      - name: Validate backup and restore script syntax
+        run: bash -n scripts/backup_postgres.sh scripts/restore_postgres.sh
+      - name: Validate Caddy HTTPS configuration
+        run: docker run --rm -e OAUTH_DOMAIN=oauth.example.com -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+      - name: Validate Prometheus alert rules
+        run: docker run --rm -v "$PWD/monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro" prom/prometheus:v3.6.0 promtool check rules /etc/prometheus/alerts.yml
