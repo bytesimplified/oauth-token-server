@@ -58,7 +58,13 @@ resource "aws_iam_role_policy" "oauth" {
       {
         Sid      = "SignOAuthTokens"
         Effect   = "Allow"
-        Action   = ["kms:Sign", "kms:GetPublicKey"]
+        Action   = ["kms:Sign"]
+        Resource = [aws_kms_key.signing.arn]
+      },
+      {
+        Sid      = "ReadPublicSigningKeys"
+        Effect   = "Allow"
+        Action   = ["kms:GetPublicKey"]
         Resource = concat([aws_kms_key.signing.arn], var.previous_kms_key_arns)
       },
       {
